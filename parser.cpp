@@ -1,13 +1,9 @@
 #include <iostream>
 #include <vector>
 #include <string>
-#include <set>
-#include <memory>
-#include <sstream>
-#include "tokenize.cpp"
-using namespace std;
+#include <utility> 
 
-using namespace std;
+#include "tokenize.cpp"
 
 enum ParseError {
     UnexpectedEOF,
@@ -25,60 +21,67 @@ enum ParseError {
 struct ParseException {
     ParseError error;
     Token token;
-    string message;
+    std::string message;
 
-    ParseException(ParseError e, const Token &t, const string &msg = "")
-        : error(e), token(t), message(msg) {}
+    ParseException(ParseError e, const Token &t, const std::string &msg = "")
+        : error(e), token(t), message(std::move(msg)) {}
 };
 
- 
 struct ASTNode {
     virtual ~ASTNode() = default;
     virtual void print(int indent = 0) const = 0;
-    string indentStr(int n) const { return string(n * 2, ' '); }
+    std::string indentStr(int n) const { return std::string(n * 2, ' '); }
 };
 
 struct Expr : ASTNode {};
+
 struct LiteralExpr : Expr {
-    string value;
-    string type;
-    LiteralExpr(string v, string t) : value(v), type(t) {}
+    std::string value;
+    std::string type;
+    LiteralExpr(std::string v, std::string t) : value(std::move(v)), type(std::move(t)) {}
     void print(int indent = 0) const override {
-        cout << indentStr(indent) << "Literal(" << type << ": " << value << ")\n";
+        std::cout << indentStr(indent) << "Literal(" << type << ": " << value << ")\n";
     }
 };
 
 struct IdentExpr : Expr {
-    string name;
-    IdentExpr(string n) : name(n) {}
+    std::string name;
+    IdentExpr(std::string n) : name(std::move(n)) {}
     void print(int indent = 0) const override {
-        cout << indentStr(indent) << "Identifier(" << name << ")\n";
+        std::cout << indentStr(indent) << "Identifier(" << name << ")\n";
     }
 };
 
-// ---- Statements ----
 struct Stmt : ASTNode {};
+
 struct VarDeclStmt : Stmt {
-    string type;
-    string name;
+    std::string type;
+    std::string name;
     Expr* init;
-    VarDeclStmt(string t, string n, Expr* i = nullptr) : type(t), name(n), init(i) {}
+    VarDeclStmt(std::string t, std::string n, Expr* i = nullptr) 
+      : type(std::move(t)), name(std::move(n)), init(i) {}
+
+    ~VarDeclStmt() {
+        delete init;
+    }
+
     void print(int indent = 0) const override {
-        cout << indentStr(indent) << "VarDecl(" << type << " " << name << ")\n";
+        std::cout << indentStr(indent) << "VarDecl(" << type << " " << name << ")\n";
         if (init) {
-            cout << indentStr(indent + 1) << "Initializer:\n";
+            std::cout << indentStr(indent + 1) << "Initializer:\n";
             init->print(indent + 2);
         }
     }
 };
 
+
 // ---- Parser Class ----
 class Parser {
 public:
-    Parser(const vector<Token> &tokens) : tokens(tokens), index(0) {}
+    Parser(const std::vector<Token> &tokens) : tokens(tokens), index(0) {}
 
-    vector<Stmt*> parseProgram() {
-        vector<Stmt*> statements;
+    std::vector<Stmt*> parseProgram() {
+        std::vector<Stmt*> statements;
         while (!isAtEnd()) {
             statements.push_back(parseStatement());
         }
@@ -86,21 +89,12 @@ public:
     }
 
 private:
-    const vector<Token> &tokens;
+    const std::vector<Token> &tokens;
     size_t index;
 
-    // --- Utility ---
+   
     const Token& current() const {
-        if (index >= tokens.size()) {
-            static Token eofToken = {T_EOF, ""};
-            return eofToken;
-        }
-        return tokens[index];
-    }
-
-    const Token& advance() {
-        if (!isAtEnd()) index++;
-        return previous();
+        return tokens[index]; // Safer because we never advance past EOF
     }
 
     const Token& previous() const {
@@ -108,25 +102,32 @@ private:
     }
 
     bool isAtEnd() const {
-        return current().type == T_EOF;
+        return tokens[index].type == T_EOF;
+    }
+
+    const Token& advance() {
+        if (!isAtEnd()) {
+            index++;
+        }
+        return previous();
     }
 
     bool match(TokenType type) {
-        if (current().type == type) {
-            advance();
-            return true;
+        if (isAtEnd() || current().type != type) {
+            return false;
         }
-        return false;
+        advance();
+        return true;
     }
 
-    void expect(TokenType type, ParseError errType, const string &msg) {
+    void expect(TokenType type, ParseError errType, const std::string &msg) {
         if (current().type != type) {
             throw ParseException(errType, current(), msg);
         }
         advance();
     }
 
-    // --- Parse Functions ---
+    
     Stmt* parseStatement() {
         if (current().type == T_INT || current().type == T_FLOAT ||
             current().type == T_STRING || current().type == T_BOOL) {
@@ -136,14 +137,12 @@ private:
     }
 
     Stmt* parseVarDecl() {
-        string type = current().value;
+        std::string type = current().value;
         advance();
 
-        if (current().type != T_IDENTIFIER) {
-            throw ParseException(ExpectedIdentifier, current(), "Expected variable name after type");
-        }
-        string name = current().value;
-        advance();
+        const Token& nameToken = current();
+        expect(T_IDENTIFIER, ExpectedIdentifier, "Expected variable name after type");
+        std::string name = nameToken.value;
 
         Expr* initializer = nullptr;
         if (match(T_ASSIGNOP)) {
@@ -154,39 +153,47 @@ private:
         return new VarDeclStmt(type, name, initializer);
     }
 
-    Expr* parseExpression(const string &expectedType) {
-        // Match based on expected variable type
-        switch (current().type) {
+
+    Expr* parseExpression(const std::string &expectedType) {
+        Token currentToken = current();
+        
+        switch (currentToken.type) {
             case T_INTLIT:
                 if (expectedType != "int")
-                    throw ParseException(ExpectedIntLit, current(), "Expected integer literal");
-                return new LiteralExpr(current().value, "int");
+                    throw ParseException(ExpectedIntLit, currentToken, "Type mismatch: expected int literal for int variable.");
+                advance(); 
+                return new LiteralExpr(currentToken.value, "int");
 
             case T_FLOATLIT:
                 if (expectedType != "float")
-                    throw ParseException(ExpectedFloatLit, current(), "Expected float literal");
-                return new LiteralExpr(current().value, "float");
+                    throw ParseException(ExpectedFloatLit, currentToken, "Type mismatch: expected float literal for float variable.");
+                advance(); 
+                return new LiteralExpr(currentToken.value, "float");
 
             case T_STRINGLIT:
                 if (expectedType != "string")
-                    throw ParseException(ExpectedStringLit, current(), "Expected string literal");
-                return new LiteralExpr(current().value, "string");
+                    throw ParseException(ExpectedStringLit, currentToken, "Type mismatch: expected string literal for string variable.");
+                advance();
+                return new LiteralExpr(currentToken.value, "string");
 
             case T_BOOLLIT:
                 if (expectedType != "bool")
-                    throw ParseException(ExpectedBoolLit, current(), "Expected boolean literal");
-                return new LiteralExpr(current().value, "bool");
+                    throw ParseException(ExpectedBoolLit, currentToken, "Type mismatch: expected bool literal for bool variable.");
+                advance(); 
+                return new LiteralExpr(currentToken.value, "bool");
 
             case T_IDENTIFIER:
-                return new IdentExpr(current().value);
+                advance();
+                return new IdentExpr(currentToken.value);
 
             default:
-                throw ParseException(ExpectedExpr, current(), "Expected an expression after '='");
+                throw ParseException(ExpectedExpr, currentToken, "Expected an expression after '='");
         }
     }
 };
 
-string parseErrorToString(ParseError err) {
+
+std::string parseErrorToString(ParseError err) {
     switch (err) {
         case UnexpectedEOF: return "UnexpectedEOF";
         case FailedToFindToken: return "FailedToFindToken";
@@ -202,114 +209,59 @@ string parseErrorToString(ParseError err) {
     }
 }
 
-// Test runner
-void runTest(const string &code, const string &description) {
-    cout << "\n=============================\n";
-    cout << "TEST: " << description << "\n";
-    cout << "=============================\n";
-    cout << code << "\n\n";
+void runTest(const std::string &code, const std::string &description) {
+    std::cout << "\n=============================\n";
+    std::cout << "TEST: " << description << "\n";
+    std::cout << "=============================\n";
+    std::cout << "Code:\n" << code << "\n\n";
 
-    vector<Token> tokens = tokenize(code);
+    std::vector<Token> tokens = tokenize(code);
+    std::vector<Stmt*> program; // Declare here for cleanup
 
-    // Print all tokens
-    cout << "--- Tokens ---\n";
+    std::cout << "--- Tokens ---\n";
     for (const auto &t : tokens) {
-        cout << tokenTypeToString(t.type) << "\t\"" << t.value
-             << "\"\tLine: " << t.line << "\tCol: " << t.column << endl;
+        std::cout << tokenTypeToString(t.type) << "\t\"" << t.value
+                  << "\"\tLine: " << t.line << "\tCol: " << t.column << std::endl;
     }
 
-    cout << "\n--- Parsing ---\n";
+    std::cout << "\n--- Parsing ---\n";
     try {
         Parser parser(tokens);
-        auto program = parser.parseProgram();
-        cout << "AST Generated Successfully:\n";
-        for (auto &stmt : program) stmt->print(0);
+        program = parser.parseProgram();
+        std::cout << "AST Generated Successfully:\n";
+        for (auto const& stmt : program) {
+            stmt->print(0);
+        }
     } catch (const ParseException &ex) {
-        cerr << "Parse error: " << parseErrorToString(ex.error)
-             << " at token (" << tokenTypeToString(ex.token.type)
-             << ", \"" << ex.token.value << "\")"
-             << " msg: " << ex.message << "\n";
+        std::cerr << "Parse error: " << parseErrorToString(ex.error)
+                  << " at token (" << tokenTypeToString(ex.token.type)
+                  << ", \"" << ex.token.value << "\") on line " << ex.token.line
+                  << ". Message: " << ex.message << "\n";
+    }
+    
+    // --- FIX ---: Clean up allocated memory to prevent leaks in the test runner
+    for (auto stmt : program) {
+        delete stmt;
     }
 }
 
+
 int main() {
-    // 1. Successful parsing
-    runTest(
-        R"(int x = 42;)",
-        "Valid variable declaration"
-    );
-
-    // 2. Missing semicolon -> FailedToFindToken
-    runTest(
-        R"(int x = 42)",
-        "Missing semicolon after declaration"
-    );
-
-    // 3. No type keyword -> ExpectedTypeToken
-    runTest(
-        R"(x = 42;)",
-        "Declaration without type keyword"
-    );
-
-    // 4. No identifier -> ExpectedIdentifier
-    runTest(
-        R"(int = 42;)",
-        "Missing variable name after type"
-    );
-
-    // 5. Unexpected token (number as identifier) -> UnexpectedToken
-    runTest(
-        R"(int 123 = 5;)",
-        "Unexpected token: number used as variable name"
-    );
-
-    // 6. Type mismatch (int assigned string) -> ExpectedIntLit
-    runTest(
-        R"(int x = "Rahim";)",
-        "Type mismatch: int variable assigned string literal"
-    );
-
-    // 7. Type mismatch (float assigned bool) -> ExpectedFloatLit
-    runTest(
-        R"(float pi = true;)",
-        "Type mismatch: float variable assigned boolean literal"
-    );
-
-    // 8. Type mismatch (string assigned int) -> ExpectedStringLit
-    runTest(
-        R"(string name = 42;)",
-        "Type mismatch: string variable assigned int literal"
-    );
-
-    // 9. Type mismatch (bool assigned int) -> ExpectedBoolLit
-    runTest(
-        R"(bool flag = 123;)",
-        "Type mismatch: bool variable assigned int literal"
-    );
-
-    // 10. Missing expression -> ExpectedExpr
-    runTest(
-        R"(int x = ;)",
-        "Missing expression after assignment"
-    );
-
-    // 11. Unexpected EOF inside program -> UnexpectedEOF
-    runTest(
-        R"(int y = 5; int z = )",
-        "Unexpected EOF inside code"
-    );
-
-    // 12. '=' missing between type and value -> UnexpectedToken
-    runTest(
-        R"(int x 42;)",
-        "Unexpected token: '=' missing before literal"
-    );
-
-    // 13. Float assigned string -> ExpectedFloatLit
-    runTest(
-        R"(float pi = "abc";)",
-        "Type mismatch: float variable assigned string literal"
-    );
+  
+    runTest(R"(int x1 = 42;)", "Valid variable declaration");
+    runTest(R"(int 1x = 53;)", "UnValid variable declaration");
+    runTest(R"(int x = 42)", "Missing semicolon after declaration");
+    runTest(R"(x = 42;)", "Declaration without type keyword");
+    runTest(R"(int = 42;)", "Missing variable name after type");
+    runTest(R"(int 123 = 5;)", "Unexpected token: number used as variable name");
+    runTest(R"(int x = "Rahim";)", "Type mismatch: int variable assigned string literal");
+    runTest(R"(float pi = true;)", "Type mismatch: float variable assigned boolean literal");
+    runTest(R"(string name = 42;)", "Type mismatch: string variable assigned int literal");
+    runTest(R"(bool flag = 123;)", "Type mismatch: bool variable assigned int literal");
+    runTest(R"(int x = ;)", "Missing expression after assignment");
+    runTest(R"(int y = 5; int z = )", "Unexpected EOF inside code");
+    runTest(R"(int x 42;)", "Unexpected token: '=' missing before literal");
+    runTest(R"(float pi = "abc";)", "Type mismatch: float variable assigned string literal");
 
     return 0;
 }
